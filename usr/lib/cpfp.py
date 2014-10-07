@@ -22,6 +22,10 @@ import socket
 import binascii
 import os
 import glob
+import stem
+from stem import connection
+from stem.control import Controller
+
 
 class UnexpectedAnswer(Exception):
 
@@ -86,17 +90,6 @@ if  LIMIT_STRING_LENGTH and \
     not LIMIT_GETINFO_NET_LISTENERS_SOCKS:
         raise UnexpectedAnswer("Invalid configuration")
 
-"""
-    # In my tests, the answer from "net_listeners_socks" was 1849 bytes long.
-    MAX_LINESIZE = 2048
-
-# This configuration would truncate "net_listeners_socks" answer and raise an exception,
-# Tor Button will be disabled.
-if  CONTROL_PORT_FILTER_LIMIT_STRING_LENGTH and \
-    not CONTROL_PORT_FILTER_LIMIT_GETINFO_NET_LISTENERS_SOCKS:
-        raise UnexpectedAnswer("Invalid configuration")
-"""
-
 
 def check_answer(answer):
     # Check length only. Could be refined later.
@@ -113,58 +106,38 @@ def do_request_real(request):
         print "tor is not running"
         return reply + '\r\n'
 
-    # Read authentication cookie
-    with open(AUTH_COOKIE, "rb") as f:
-        rawcookie = f.read(32)
-        hexcookie = binascii.hexlify(rawcookie)
+    # The "lie" implemented in cpfp-tcpserver
+    if request == 'GETINFO net/listeners/socks' and \
+        LIMIT_GETINFO_NET_LISTENERS_SOCKS:
+            return('250-net/listeners/socks="127.0.0.1:9150"\n')
 
-        # Connect to the real control port
-        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        sock.settimeout(10.0)
-        sock.connect(SOCKET)
-        readh = sock.makefile("r")
-        writeh = sock.makefile("w")
-
-        # Authenticate
-        writeh.write("AUTHENTICATE " + hexcookie + "\n")
-        writeh.flush()
-        answer = readh.readline()
-        # strict answer check ('==' instead of '.startwith()'
-        if not answer.strip() == "250 OK":
-            raise UnexpectedAnswer("AUTHENTICATE failed")
-        #if not check_answer(answer):
-        #   raise UnexpectedAnswer('[AUTHENTICATE] Expected: "250 OK", received ' + answer + "'")
-
-        # The "lie" implemented in cpfp-tcpserver
-        if request == 'GETINFO net/listeners/socks' and \
-            LIMIT_GETINFO_NET_LISTENERS_SOCKS:
-                return('250-net/listeners/socks="127.0.0.1:9150"\n')
-
-        # Send the request
-        writeh.write(request + '\n')
-        writeh.flush()
-        answer = readh.readline()
-        if not answer.startswith("250"):
-            raise UnexpectedAnswer("Request failed: " + request)
+    try:
+      with Controller.from_port() as controller:
+        controller.authenticate()
+        answer = str(controller.msg(request))
         if not check_answer(answer):
             raise UnexpectedAnswer("Request '" + request  + "': Answer too long '" + answer + "'")
-        reply = answer
-
-        # Close the connection
-        # Some requests return "250 OK" and close the connection.
-        # 'SIGNAL NEWNYM' is an example.
-        if not answer.strip() == "250 OK":
-           writeh.write("QUIT\n")
-           writeh.flush()
-           answer = readh.readline()
-           if not answer.strip() == "250 OK":
-               raise UnexpectedAnswer("QUIT failed")
-        # answer terminated with '250 OK'
-        reply =reply + answer
-
-        sock.close()
-
+        # strip "250-[request]=" from answer
+        index = answer.index('=') + 1
+        reply = answer[index:]
         return reply
+
+    except connection.AuthenticationFailure as e:
+      error = 'Unable to authenticate: %s' % e
+      print error
+      return error
+    except stem.SocketError as e:
+      error = 'Socket error: %s' % e
+      print error
+      return error
+    except stem.ProtocolError as e:
+      error = 'Protocol error: %s' % e
+      print error
+      return error
+    except stem.InvalidArguments as e:
+      error = 'Invalid Arguments: %s' % e
+      print error
+      return error
 
 
 def do_request(request):
@@ -193,10 +166,8 @@ def handle_connection(sock):
             break
         # Strip escaped chars and white spaces at beginning and end of string
         request = line.strip()
-        first_word = request.split(' ', 1)[0]
-
         # Authentication request from Tor Browser.
-        if first_word == "AUTHENTICATE":
+        if request.startswith("AUTHENTICATE"):
             # Don't check authentication, since only
             # safe requests are allowed
             writeh.write("250 OK\n")
