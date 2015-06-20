@@ -26,6 +26,24 @@ Restart=always
 ##
 
 PrivateTmp=yes
+PrivateDevices=true
+
+ProtectSystem=full
+ProtectHome=true
+
+NoNewPrivileges=true
+
+SystemCallFilter=close
+SystemCallFilter=open
+SystemCallFilter=link
+SystemCallFilter=access
+SystemCallFilter=kill
+SystemCallFilter=ioctl
+SystemCallFilter=readlink
+SystemCallFilter=stat64
+SystemCallFilter=getsockopt
+
+SystemCallArchitectures=native
 
 [Install]
 WantedBy=multi-user.target
